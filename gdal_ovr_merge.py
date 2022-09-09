@@ -18,28 +18,27 @@ from PIL import Image
 from PIL import ImageSequence
 from PIL import TiffImagePlugin
 
+Image.MAX_IMAGE_PIXELS = None
 
-def get_data(names):
-    ovr_pages = []
-    tif_files = []
-    for filename in names:
-        fh = Image.open(filename)
-        if fh is None:
-            sys.exit(1)
 
-        filename_aux = filename.rstrip('.ovr')
-        fh_aux = gdal.Open(filename_aux)
-        if fh_aux is None:
-            print("Error, could not find tif file for overlay file: " + filename)
-            sys.exit(1)
+def get_ovr_pages(filename):
+    fh = Image.open(filename)
+    if fh is None:
+        sys.exit(1)
 
-        # Open different pages from the ovr file
-        pages = []
-        for page in ImageSequence.Iterator(fh):
-            pages.append(page.copy())
-        ovr_pages.append(pages)
-        tif_files.append(fh_aux)
-    return (ovr_pages, tif_files)
+    # Open different pages from the ovr file. Have to use copy... takes about two seconds per image
+    pages = []
+    for i, page in enumerate(ImageSequence.Iterator(fh)):
+       pages.append(page.copy())
+    return pages
+
+def get_tif_file(filename):
+    filename_aux = filename.rstrip('.ovr')
+    fh_aux = gdal.Open(filename_aux)
+    if fh_aux is None:
+        print("Error, could not find tif file for overlay file: " + filename)
+        sys.exit(1)
+    return fh_aux
 
 
 def main(argv=None):
@@ -78,53 +77,73 @@ def main(argv=None):
     Driver = gdal.GetDriverByName("GTiff")
     DriverMD = Driver.GetMetadata()
 
-    ovr_pages, tif_files = (get_data(names))
-
-    tile_w = tif_files[0].RasterXSize
-    tile_h = tif_files[0].RasterYSize
-
-    level_widths = [ x.size for x in ovr_pages[0]]
-
-    #Make sure that all leveltiles are same size as the one for the first
-    for tile_pages in ovr_pages[1:]:
-        t = [ x.size for x in tile_pages]
-        assert (t == level_widths)
-
-    # Make sure each tile is the same size as the first one
-    for tile in tif_files[1:]:
-        assert(tile.RasterXSize == tile_w)
-        assert(tile.RasterYSize == tile_h)
-
-    # Calculate the corners of the image
-    geotransforms = [tile.GetGeoTransform() for tile in tif_files]
-    for x in geotransforms[1:]:
-        assert(x[1] == geotransforms[0][1])
-        assert(x[2] == geotransforms[0][2])
-        assert(x[4] == geotransforms[0][4])
-        assert(x[5] == geotransforms[0][5])
-    min_x = min([x[0] for x in geotransforms])
-    min_y = min([x[3] for x in geotransforms]) + (tile_h * geotransforms[0][5])
-    max_x = max([x[0] for x in geotransforms]) + (tile_w * geotransforms[0][1])
-    max_y = max([x[3] for x in geotransforms])
+    # Calculate some metadata from the first image in the mosaic, all images should be same
+    print("Calculating metadata on first image")
+    ovr_pages_0 = get_ovr_pages(names[0])
+    tif_file_0 = get_tif_file(names[0])
+    geotransform_0 = tif_file_0.GetGeoTransform()
+    level_widths = [ x.size for x in ovr_pages_0]
+    tile_w = tif_file_0.RasterXSize
+    tile_h = tif_file_0.RasterYSize
 
     # dont support rotated images at this time
-    assert(geotransforms[0][2] == 0)
-    assert(geotransforms[0][4] == 0)
+    assert(geotransform_0[2] == 0)
+    assert(geotransform_0[4] == 0)
+
+
+    # Calculate rest of metadata from all the images of the mosaic, requries one iteration over all data.
+    # Also run asserts to make sure the files have same required properties
+    min_x = min_y = float('inf')
+    max_x = max_y = float('-inf')
+    print("Calculating metadata across the mosaic")
+    for filename in names:
+        tif_file = get_tif_file(filename)
+        tif_geotransform = tif_file.GetGeoTransform()
+        
+        # Make sure that all pyramid levels are same across the mosaic. Dont use get_ovr_pages since it's runtime is long
+        assert ([ x.size for x in ImageSequence.Iterator(Image.open(filename))] == level_widths)
+
+        # Make sure that tif image is same size across the mosaic
+        assert(tif_file.RasterXSize == tile_w)
+        assert(tif_file.RasterYSize == tile_h)
+
+        # Make sure that image affine transformations are same accross the mosaic
+        assert(tif_geotransform[1] == geotransform_0[1])
+        assert(tif_geotransform[2] == geotransform_0[2])
+        assert(tif_geotransform[4] == geotransform_0[4])
+        assert(tif_geotransform[5] == geotransform_0[5])
+
+        # Update x/y min/max values if required
+        if tif_geotransform[0] > max_x:
+            max_x = tif_geotransform[0]
+        elif tif_geotransform[0] < min_x:
+            min_x = tif_geotransform[0]
+        if tif_geotransform[3] > max_y:
+            max_y = tif_geotransform[3]
+        elif tif_geotransform[3] < min_y:
+            min_y = tif_geotransform[3]
+
+    # Calculate the corners of the image
+    min_y = min_y + (tile_h * geotransform_0[5])
+    max_x = max_x + (tile_w * geotransform_0[1])
 
     # Calculate how many x-y tiles the merged image consists of
-    num_x_tiles = abs(int((max_x-min_x) / (tile_w * geotransforms[0][1])))
-    num_y_tiles = abs(int((max_y-min_y) / (tile_h * geotransforms[0][5])))
+    num_x_tiles = abs(int((max_x-min_x) / (tile_w * geotransform_0[1])))
+    num_y_tiles = abs(int((max_y-min_y) / (tile_h * geotransform_0[5])))
 
     im_merged_w = num_x_tiles * tile_w
     im_merged_h = num_y_tiles * tile_h
+    print(f"Size of merged tiff image is: {(im_merged_w, im_merged_h)}")
 
+    #image_list = []
 
-    image_list = []
-
-    for i in range(0,len(ovr_pages[0])):
-        ovr_page_size = ovr_pages[0][i].size
-        merged_ovr_tile = Image.new(ovr_pages[0][i].mode,(ovr_page_size[0] * num_x_tiles, ovr_page_size[1] * num_y_tiles)) 
-        for tile_pages,tile in zip(ovr_pages,tif_files):
+    for i in range(0,len(ovr_pages_0)):
+        ovr_page_size = ovr_pages_0[i].size
+        print(f"Merging level: {i}, tile size: {ovr_page_size}, image size: {(ovr_page_size[0] * num_x_tiles, ovr_page_size[1] * num_y_tiles)}")
+        merged_ovr_tile = Image.new(ovr_pages_0[i].mode,(ovr_page_size[0] * num_x_tiles, ovr_page_size[1] * num_y_tiles))
+        for filename in names:
+            tile_pages = get_ovr_pages(filename)
+            tile = get_tif_file(filename)
             # First need to calculate the location of the tif tile in the merged image
             geotransform = tile.GetGeoTransform()
             xw = geotransform[0] # World x-coord of the top left pixel
@@ -140,9 +159,11 @@ def main(argv=None):
             y_ovr = math.floor(y_scaling_factor * y_im)
 
             merged_ovr_tile.paste(tile_ovr_page, (int(x_ovr), int(y_ovr)))
-        image_list.append(merged_ovr_tile)        
-    image_list[0].save('.pil_temp.tif', compression=None, save_all=True, append_images=image_list[1:])
-    os.rename('.pil_temp.tif', out_file)
+        merged_ovr_tile.save('pil_temp.tif', compression=ovr_pages_0[0].info['compression'])
+        os.rename('pil_temp.tif', out_file + (i* ".ovr"))
+    #    image_list.append(merged_ovr_tile)        
+    #image_list[0].save('pil_temp.tif', compression=ovr_pages_0[0].info['compression'], save_all=True, append_images=image_list[1:])
+    #os.rename('.pil_temp.tif', out_file)
     return 0
 
 
