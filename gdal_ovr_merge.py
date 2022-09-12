@@ -11,12 +11,12 @@ import math
 import os.path
 import sys
 import time
+import numpy as np
 
 from osgeo import gdal
 
 from PIL import Image
 from PIL import ImageSequence
-from PIL import TiffImagePlugin
 
 Image.MAX_IMAGE_PIXELS = None
 
@@ -29,8 +29,9 @@ def get_ovr_pages(filename):
     # Open different pages from the ovr file. Have to use copy... takes about two seconds per image
     pages = []
     for i, page in enumerate(ImageSequence.Iterator(fh)):
-       pages.append(page.copy())
+        pages.append(page.copy())
     return pages
+
 
 def get_tif_file(filename):
     filename_aux = filename.rstrip('.ovr')
@@ -82,14 +83,13 @@ def main(argv=None):
     ovr_pages_0 = get_ovr_pages(names[0])
     tif_file_0 = get_tif_file(names[0])
     geotransform_0 = tif_file_0.GetGeoTransform()
-    level_widths = [ x.size for x in ovr_pages_0]
+    level_widths = [x.size for x in ovr_pages_0]
     tile_w = tif_file_0.RasterXSize
     tile_h = tif_file_0.RasterYSize
 
     # dont support rotated images at this time
     assert(geotransform_0[2] == 0)
     assert(geotransform_0[4] == 0)
-
 
     # Calculate rest of metadata from all the images of the mosaic, requries one iteration over all data.
     # Also run asserts to make sure the files have same required properties
@@ -99,9 +99,10 @@ def main(argv=None):
     for filename in names:
         tif_file = get_tif_file(filename)
         tif_geotransform = tif_file.GetGeoTransform()
-        
+
         # Make sure that all pyramid levels are same across the mosaic. Dont use get_ovr_pages since it's runtime is long
-        assert ([ x.size for x in ImageSequence.Iterator(Image.open(filename))] == level_widths)
+        assert ([x.size for x in ImageSequence.Iterator(
+            Image.open(filename))] == level_widths)
 
         # Make sure that tif image is same size across the mosaic
         assert(tif_file.RasterXSize == tile_w)
@@ -137,33 +138,35 @@ def main(argv=None):
 
     #image_list = []
 
-    for i in range(0,len(ovr_pages_0)):
+    for i in range(0, len(ovr_pages_0)):
         ovr_page_size = ovr_pages_0[i].size
-        print(f"Merging level: {i}, tile size: {ovr_page_size}, image size: {(ovr_page_size[0] * num_x_tiles, ovr_page_size[1] * num_y_tiles)}")
-        merged_ovr_tile = Image.new(ovr_pages_0[i].mode,(ovr_page_size[0] * num_x_tiles, ovr_page_size[1] * num_y_tiles))
+        print(
+            f"Merging level: {i}, tile size: {ovr_page_size}, image size: {(ovr_page_size[0] * num_x_tiles, ovr_page_size[1] * num_y_tiles)}")
+        dst_ds = gdal.GetDriverByName('GTiff').Create('pil_temp.tif', xsize=(ovr_page_size[0] * num_x_tiles), ysize=(ovr_page_size[1] * num_y_tiles),
+                                                      bands=len(ovr_pages_0[0].getbands()), eType=gdal.GDT_Byte, options=["COMPRESS=JPEG", "TILED=YES"])
         for filename in names:
             tile_pages = get_ovr_pages(filename)
             tile = get_tif_file(filename)
             # First need to calculate the location of the tif tile in the merged image
             geotransform = tile.GetGeoTransform()
-            xw = geotransform[0] # World x-coord of the top left pixel
-            yw = geotransform[3] # World y-coord of the top left pixel
+            xw = geotransform[0]  # World x-coord of the top left pixel
+            yw = geotransform[3]  # World y-coord of the top left pixel
             x_im = int((xw - min_x) / geotransform[1])
             y_im = int((yw - max_y) / geotransform[5])
 
-            ## based on the location of the tif tile , need to calculate the location of the ovr tile in the smaller merged ovr image
+            # based on the location of the tif tile , need to calculate the location of the ovr tile in the smaller merged ovr image
             tile_ovr_page = tile_pages[i]
             x_scaling_factor = tile_ovr_page.size[0] / tile.RasterXSize
             y_scaling_factor = tile_ovr_page.size[1] / tile.RasterYSize
             x_ovr = math.floor(x_scaling_factor * x_im)
             y_ovr = math.floor(y_scaling_factor * y_im)
 
-            merged_ovr_tile.paste(tile_ovr_page, (int(x_ovr), int(y_ovr)))
-        merged_ovr_tile.save('pil_temp.tif', compression=ovr_pages_0[0].info['compression'])
-        os.rename('pil_temp.tif', out_file + (i* ".ovr"))
-    #    image_list.append(merged_ovr_tile)        
-    #image_list[0].save('pil_temp.tif', compression=ovr_pages_0[0].info['compression'], save_all=True, append_images=image_list[1:])
-    #os.rename('.pil_temp.tif', out_file)
+            for band, b_i in zip(tile_ovr_page.getbands(), range(1, dst_ds.RasterCount+1)):
+                band_data = np.array(tile_ovr_page.getchannel(band))
+                dst_ds.GetRasterBand(b_i).WriteArray(
+                    band_data, int(x_ovr), int(y_ovr))
+            dst_ds.FlushCache()
+        os.rename('pil_temp.tif', out_file + (i * ".ovr"))
     return 0
 
 
