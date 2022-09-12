@@ -97,7 +97,7 @@ def main(argv=None):
     max_x = max_y = float('-inf')
     print("Calculating metadata across the mosaic")
     for filename in names:
-        assert(filename.endswith(".ovr"), "Filename does not end with .ovr this script only support merging of ovr files")
+        assert filename.endswith(".ovr"), "Filename does not end with .ovr this script only support merging of ovr files"
         tif_file = get_tif_file(filename)
         tif_geotransform = tif_file.GetGeoTransform()
 
@@ -141,7 +141,7 @@ def main(argv=None):
         print(
             f"Merging level: {i}, tile size: {ovr_page_size}, image size: {(ovr_page_size[0] * num_x_tiles, ovr_page_size[1] * num_y_tiles)}")
         dst_ds = gdal.GetDriverByName('GTiff').Create('pil_temp.tif', xsize=(ovr_page_size[0] * num_x_tiles), ysize=(ovr_page_size[1] * num_y_tiles),
-                                                      bands=len(ovr_pages_0[0].getbands()), eType=gdal.GDT_Byte, options=["COMPRESS=JPEG", "TILED=YES", "NUM_THREADS=ALL_CPUS","BIGTIFF=YES"])
+                                                      bands=len(ovr_pages_0[0].getbands()), eType=gdal.GDT_Byte, options=["COMPRESS=JPEG", "TILED=YES", "NUM_THREADS=ALL_CPUS","BIGTIFF=YES","PHOTOMETRIC=YCBCR"])
         pr = 0
         print("Progress: 0", end="")
         for filename in names:
