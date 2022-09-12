@@ -1,7 +1,7 @@
 #! /usr/bin/python3
 ###############################################################################
 #
-# Purpose:  Modified version of OSGeo gdal_merge.py script to support merging of ovr files
+# Purpose:  Script to merge external overview files (.tif.ovr) for GTiff images.
 # Author:   Jeremias Penttilä, jp4896@protonmail.com
 #
 ###############################################################################
@@ -97,6 +97,7 @@ def main(argv=None):
     max_x = max_y = float('-inf')
     print("Calculating metadata across the mosaic")
     for filename in names:
+        assert(filename.endswith(".ovr"), "Filename does not end with .ovr this script only support merging of ovr files")
         tif_file = get_tif_file(filename)
         tif_geotransform = tif_file.GetGeoTransform()
 
@@ -135,15 +136,14 @@ def main(argv=None):
     im_merged_w = num_x_tiles * tile_w
     im_merged_h = num_y_tiles * tile_h
     print(f"Size of merged tiff image is: {(im_merged_w, im_merged_h)}")
-
-    #image_list = []
-
     for i in range(0, len(ovr_pages_0)):
         ovr_page_size = ovr_pages_0[i].size
         print(
             f"Merging level: {i}, tile size: {ovr_page_size}, image size: {(ovr_page_size[0] * num_x_tiles, ovr_page_size[1] * num_y_tiles)}")
         dst_ds = gdal.GetDriverByName('GTiff').Create('pil_temp.tif', xsize=(ovr_page_size[0] * num_x_tiles), ysize=(ovr_page_size[1] * num_y_tiles),
-                                                      bands=len(ovr_pages_0[0].getbands()), eType=gdal.GDT_Byte, options=["COMPRESS=JPEG", "TILED=YES"])
+                                                      bands=len(ovr_pages_0[0].getbands()), eType=gdal.GDT_Byte, options=["COMPRESS=JPEG", "TILED=YES", "NUM_THREADS=ALL_CPUS","BIGTIFF=YES"])
+        pr = 0
+        print("Progress: 0", end="")
         for filename in names:
             tile_pages = get_ovr_pages(filename)
             tile = get_tif_file(filename)
@@ -166,6 +166,9 @@ def main(argv=None):
                 dst_ds.GetRasterBand(b_i).WriteArray(
                     band_data, int(x_ovr), int(y_ovr))
             dst_ds.FlushCache()
+            pr += 1
+            progress = math.floor((pr/len(names))*100 / 10) * 10
+            print(f"..{progress}" , end=("\n" if progress == 100 else ""))
         os.rename('pil_temp.tif', out_file + (i * ".ovr"))
     return 0
 

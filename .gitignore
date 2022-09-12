@@ -1,6 +1,7 @@
 out/
 test*/
 .vscode/
+pil_temp.tif
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
